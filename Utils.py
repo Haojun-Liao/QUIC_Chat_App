@@ -1,14 +1,8 @@
-from typing import Dict, Optional, Union, List
+from typing import Dict, Optional
 from starlette.types import Receive, Send
 from aioquic.tls import SessionTicket
 
-# from Http3 import HttpRequestHandler
-# from Websocket import WebSocketHandler
-# from WebTransport import WebTransportHandler
-
-
 SERVERNAME = 'QUICChat'
-
 
 
 class SessionTicketStore:

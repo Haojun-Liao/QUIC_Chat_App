@@ -1,17 +1,10 @@
 import asyncio
-import time
-import ssl
-from os import getpid
-from typing import Dict, Optional, Union, Callable, cast, List
-from email.utils import formatdate
+from typing import Dict, Optional, Union
 
 
-from aioquic.asyncio import QuicConnectionProtocol, serve
-from aioquic.asyncio.server import QuicServer
-from aioquic.quic.configuration import QuicConfiguration
+from aioquic.asyncio import QuicConnectionProtocol
 from aioquic.h3.connection import H3_ALPN, H3Connection
-from aioquic.h0.connection import H0_ALPN, H0Connection
-from aioquic.h3.exceptions import NoAvailablePushIDError
+from aioquic.h0.connection import H0_ALPN
 from aioquic.quic.events import DatagramFrameReceived, ProtocolNegotiated, QuicEvent, ConnectionTerminated
 from aioquic.h3.events import (
     DatagramReceived,
@@ -22,14 +15,12 @@ from aioquic.h3.events import (
 )
 
 from Http3 import HttpRequestHandler
-from Websocket import WebSocketHandler
 from WebTransport import WebTransportHandler
 
-# from QuicChat.asgi import application
 from fastapiServer import application
 
 
-Handler = Union[HttpRequestHandler, WebSocketHandler, WebTransportHandler]
+Handler = Union[HttpRequestHandler, WebTransportHandler]
 app = application
 
 
@@ -128,8 +119,8 @@ class HttpQuicServerProtocol(QuicConnectionProtocol):
         elif isinstance(event, WebTransportStreamDataReceived):
             handler = self._handlers[event.session_id]
             handler.http_event_receive(event)
-        else:
-            print(event)
+        # else:
+        print(event)
 
     def quic_event_received(self, event: QuicEvent) -> None:
         if isinstance(event, ProtocolNegotiated):
@@ -139,13 +130,11 @@ class HttpQuicServerProtocol(QuicConnectionProtocol):
             elif event.alpn_protocol in H0_ALPN:
                 print("not h3 protocol")
         elif isinstance(event, DatagramFrameReceived):
-            print("DatagramFrameReceived")
             if event.data == b'quack':
                 print("quack")
                 self._quic.send_datagram_frame(b'quack-ack')
         elif isinstance(event, ConnectionTerminated):
             print("Connection terminated")
-            print(event.reason_phrase)
         if self._http is not None:
             for http_event in self._http.handle_event(event):
                 self.http_event_received(http_event)

@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>ChatApp</title>
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.7.0/jquery.min.js"></script>
+    <style>
+        .card {
+            position: absolute;
+            width: 95%;
+            height: 80%;
+            box-shadow: 0px 0px 5px gray;
+            left: 2.5%;
+            top: 5%;
+        }
+        #chat-form {
+            position: absolute;
+            top: 85%;
+            transform: translateY(-85%);
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        #file-form {
+            position: absolute;
+            top: 93%;
+            transform: translateY(-93%);
+            left: 50%;
+            transform: translateX(-50%);
+        }
+        #messages {
+            padding-bottom: 10%;
+            padding-left: 20px;
+            padding-top: 20px;
+            max-height: 80%;
+            overflow: auto;
+        }
+        #chat-form input {
+            width: 400px;
+            padding-right: 20%;
+        }
+        #chat-form button {
+            position: absolute;
+            left: 85%;
+        }
+        #profile {
+            position: absolute;
+            top: 20px;
+            right: 40px;
+        }
+    </style>
+    <script type="text/javascript">
+        let wt, current_user = "Unknown", datagram_writer, streamNumber=10;
+        const encoder = new TextEncoder('utf-8');
+        const decoder = new TextDecoder('utf-8');
+
+        async function createWebTransport(){
+            let url = 'https://127.0.0.1:443/wt';
+            wt = new WebTransport(url);
+            wt.closed.then(() => {
+                console.log(`The HTTP/3 connection to ${url} closed gracefully.`);
+            }).catch((error) => {
+                console.error(`The HTTP/3 connection to ${url} closed due to ${error}.`);
+            });
+            await wt.ready;
+            datagram_writer = wt.datagrams.writable.getWriter();
+
+            await datagram_writer.ready;
+        }
+
+        function displayMessage(strings) {
+            var parent = $("#messages");
+            var data = JSON.parse(strings);
+            var sender = data['sender'];
+            var msg_type = data['type']
+            if (sender == current_user)
+                sender = "You";
+            var message = data['message']
+            var content;
+            if (sender) {
+                if (msg_type == "text") {
+                    content = "<p><strong>" + sender + ": </strong> <span> " + message + "</span></p>";
+                }
+                else {
+                    content = "<p><strong>" + sender + ": </strong> <a class='link' id=" + message + " href='#'> " + message + "</a></p>";
+
+                }
+            } else {
+                content = "<p><strong>" + message + " </strong></p>";
+            }
+            parent.append(content);
+         }
+
+         async function readDatagram(){
+            const datagram_reader = wt.datagrams.readable.getReader()
+            try {
+                while (true){
+                const {done, value} = await datagram_reader.read();
+                    if (done) {
+                        break;
+                    }
+                    console.log(decoder.decode(value))
+                    displayMessage(decoder.decode(value))
+                }
+            } catch (err) {
+                console.log(err);
+            }
+         }
+
+         async function readStream(readable, number){
+            try {
+                const decoder = new TextDecoderStream('utf-8');
+                for await (const data of readable.pipeThrough(decoder)) {
+                  console.log(`Received data on stream #${number}: ${data}`);
+                }
+                console.log(`Stream #${number} closed`);
+            } catch (e) {
+                console.log(`Error while reading from stream #${number}: ${e}`, 'error');
+                console.log(`    ${e.message}`);
+            }
+        }
+
+        async function sendCloseFrame(){
+            await datagram_writer.ready;
+            console.log("ready")
+            let data = {"type": "disconnect"};
+            await datagram_writer.write(encoder.encode(JSON.stringify(data))).catch((err) => {
+                console.log(`something went wrong when sending datagram frames: ${err}`);
+            });
+        }
+
+        $(document).ready(async function() {
+            $.get("/api/current_user", function (response) {
+                current_user = response;
+                $("#profile").text(current_user);
+            });
+            await createWebTransport();
+
+            $(document).on("click", "a.link", async function (e){
+                e.preventDefault();
+                const link = document.createElement('a')
+                link.href = `/get_files/${e.target.id}`
+                link.download = e.target.id
+                link.target = "_blank"
+                document.body.appendChild(link)
+                link.click()
+                document.body.removeChild(link)
+                window.open(link.href)
+            });
+
+
+            $("#chat-form").on("submit", async function(e) {
+                e.preventDefault();
+                var message = $("#text-input").val();
+                if (message) {
+                    let data = {
+                        "sender": current_user,
+                        "type": "text",
+                        "message": message
+                    };
+                    datagram_writer.write(encoder.encode(JSON.stringify(data)))
+                        .catch((err) => {console.log(err)});
+                    $("#text-input").val("");
+                    document.cookie = 'QuicChat-username=; path=/;';
+                }
+            });
+
+            $("#file-form").on("submit", async function(e) {
+                e.preventDefault();
+                var files = $("#file-input")[0].files;
+
+                for (const file of files){
+                    var fr = new FileReader()
+                    fr.readAsArrayBuffer(file);
+                    fr.onloadend = async function (e){
+                        var view = new Uint8Array(e.target.result);
+                        const stream = await wt.createUnidirectionalStream();
+                        const writer = stream.getWriter();
+                        await writer.write(
+                            encoder.encode(JSON.stringify(
+                                {type: "upload_file", filename: file.name, file_size: file.size}
+                            )));
+                        await writer.write(
+                            encoder.encode(JSON.stringify(Array.from(view)
+                            )));
+                        await writer.close();
+                    };
+                }
+
+            })
+
+            $(window).on("beforeunload", function(e){
+                return "Are you sure you want to leave the chatroom?"
+            });
+
+            $(window).on("unload", async function (){
+                await wt.close({
+                    closeCode: 0o17,
+                    reason: "ClosedButtonPressed",
+                });
+            });
+
+            try {
+                datagram_writer.write(encoder.encode(JSON.stringify({"username": current_user, "type": "welcome"})))
+                    .catch((err) => {console.log(err)});
+                await readDatagram();
+            }
+            catch (e){
+                console.log(e);
+            }
+
+
+        });
+    </script>
+
+</head>
+<body>
+    <div class="chat-body card">
+        <div class="card-body">
+            <h4 class="card-title text-center"> QuicChat </h4><strong id="profile"></strong>
+            <hr>
+            <div id="messages">
+            </div>
+            <form class="form-inline" id="chat-form">
+                <input id="text-input" type="text" class="form-control" placeholder="Write your message">
+                <button id="send" type="submit" class="btn btn-primary">Send</button>
+            </form>
+        </div>
+        <form class="form-inline" id="file-form" enctype='multipart/form-data'>
+            <h5>Upload: </h5>
+            <input id="file-input" name='files' type='file' multiple>
+            <input type='submit' value="Upload">
+        </form>
+
+    </div>
+</body>
+</html>

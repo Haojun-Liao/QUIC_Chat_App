@@ -1,20 +1,10 @@
 import asyncio
-import importlib
 import time
-import ssl
 from collections import deque
-from typing import Dict, Optional, Union, Callable, cast, Deque, List
+from typing import Dict, Callable, Deque
 from email.utils import formatdate
 
-import wsproto
-import wsproto.events
-
-from aioquic.asyncio import QuicConnectionProtocol, serve
-from aioquic.quic.configuration import QuicConfiguration
-from aioquic.h3.connection import H3_ALPN, H3Connection
-from aioquic.h3.exceptions import NoAvailablePushIDError
-from aioquic.h0.connection import H0_ALPN, H0Connection
-from aioquic.quic.events import DatagramFrameReceived, ProtocolNegotiated, QuicEvent, ConnectionTerminated
+from aioquic.h3.connection import H3Connection
 from aioquic.h3.events import (
     DatagramReceived,
     DataReceived,
@@ -37,10 +27,51 @@ class WebTransportHandler:
         self.stream_id = stream_id
         self.transmit = transmit
 
+    async def receive(self) -> Dict:
+        return await self.queue.get()
+
+    async def send(self, message: Dict) -> None:
+        data = b""
+        end_stream = False
+
+        if message["type"] == "webtransport.accept":
+            self.accepted = True
+
+            headers = [
+                (b":status", b"200"),
+                (b"server", SERVERNAME.encode()),
+                (b"date", formatdate(time.time(), usegmt=True).encode()),
+                (b"sec-webtransport-http3-draft", b"draft02"),
+            ]
+            self.connection.send_headers(stream_id=self.stream_id, headers=headers)
+
+            while self.http_event_queue:
+                self.http_event_receive(self.http_event_queue.popleft())
+        elif message["type"] == "webtransport.close":
+            if not self.accepted:
+                self.connection.send_headers(
+                    stream_id=self.stream_id, headers=[(b":status", b"403")]
+                )
+            end_stream = True
+        elif message["type"] == "webtransport.datagram.send":
+            self.connection.send_datagram(flow_id=self.stream_id, data=message["data"])
+        elif message["type"] == "webtransport.stream.send":
+            self.connection._quic.send_stream_data(
+                stream_id=message["stream"], data=message["data"]
+            )
+
+        if data or end_stream:
+            self.connection.send_data(
+                stream_id=self.stream_id, data=data, end_stream=end_stream
+            )
+        if end_stream:
+            self.closed = True
+
+        self.transmit()
+
     def http_event_receive(self, event: H3Event) -> None:
         if not self.closed:
             if self.accepted:
-                print(event)
                 if isinstance(event, DatagramReceived):
                     self.queue.put_nowait(
                         {
@@ -67,8 +98,6 @@ class WebTransportHandler:
                             }
                         )
             else:
-                # delay event processing until we get `webtransport.accept`
-                # from the ASGI application
                 self.http_event_queue.append(event)
 
     async def run_asgi(self, app: Callable) -> None:
@@ -79,45 +108,3 @@ class WebTransportHandler:
         finally:
             if not self.closed:
                 await self.send({"type": "webtransport.close"})
-
-    async def receive(self) -> Dict:
-        return await self.queue.get()
-
-    async def send(self, message: Dict) -> None:
-        data = b""
-        end_stream = False
-
-        if message["type"] == "webtransport.accept":
-            self.accepted = True
-
-            headers = [
-                (b":status", b"200"),
-                (b"server", SERVERNAME.encode()),
-                (b"date", formatdate(time.time(), usegmt=True).encode()),
-                (b"sec-webtransport-http3-draft", b"draft02"),
-            ]
-            self.connection.send_headers(stream_id=self.stream_id, headers=headers)
-
-            # consume backlog
-            while self.http_event_queue:
-                self.http_event_receive(self.http_event_queue.popleft())
-        elif message["type"] == "webtransport.close":
-            if not self.accepted:
-                self.connection.send_headers(
-                    stream_id=self.stream_id, headers=[(b":status", b"403")]
-                )
-            end_stream = True
-        elif message["type"] == "webtransport.datagram.send":
-            self.connection.send_datagram(flow_id=self.stream_id, data=message["data"])
-        elif message["type"] == "webtransport.stream.send":
-            self.connection._quic.send_stream_data(
-                stream_id=message["stream"], data=message["data"]
-            )
-
-        if data or end_stream:
-            self.connection.send_data(
-                stream_id=self.stream_id, data=data, end_stream=end_stream
-            )
-        if end_stream:
-            self.closed = True
-        self.transmit()

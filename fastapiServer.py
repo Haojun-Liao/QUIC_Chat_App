@@ -1,13 +1,11 @@
 import json
 from typing import Dict, Any
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body
-from fastapi import Request, Response, Cookie
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
+from fastapi import Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import FileResponse
 from ConnectionManager import ConnectionManager
-from datetime import datetime
 from pydantic import BaseModel
 from Utils import Socket
 
@@ -54,28 +52,6 @@ async def register_user(request: Request, response: Response):
     data = (await request.body()).decode()
     data = json.loads(data)
     response.set_cookie(key="QuicChat-username", value=data['username'], httponly=True)
-
-#
-# @app.websocket("/api/chat")
-# async def websocket_endpoint(websocket: WebSocket):
-#     print("websocket")
-#     user = websocket.cookies.get("QuicChat-username")
-#     if user:
-#         await manager.connect(websocket, user)
-#         message = {"user": user, "message": "is here"}
-#         await manager.broadcast(message)
-#         now = datetime.now()
-#         current_time = now.strftime("%H:%M")
-#
-#         try:
-#             while True:
-#                 data = await websocket.receive_text()
-#                 message = {"time": current_time, "message": data}
-#                 await manager.broadcast(json.dumps(message))
-#         except WebSocketDisconnect:
-#             manager.disconnect(websocket, user)
-#             message = {"time": current_time, "message": "offline"}
-#             await manager.broadcast(json.dumps(message))
 
 
 async def wt(scope, receive, send) -> None:
